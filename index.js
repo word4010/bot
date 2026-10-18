@@ -1374,3 +1374,16 @@ client.login(process.env.TOKEN)
     process.exit(1);
 
   });
+
+
+let counter = 0;
+
+setInterval(() => {
+    counter++;
+    console.log(`Universal Bot | Цикл: ${counter}`);
+
+    if (counter % 100 === 0 && global.gc) {
+        global.gc();
+        console.log('Очищення пам’яті виконано');
+    }
+}, 60000);
