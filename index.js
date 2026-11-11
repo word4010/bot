@@ -18,11 +18,13 @@ const {
 
 const fs = require("fs");
 const path = require("path");
+const createMusic = require("./music");
+const createBirthdays = require("./birthdays");
 
 const EPH = MessageFlags.Ephemeral;
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMembers]
 });
 
 // =========================
@@ -67,7 +69,15 @@ function cfg(id) {
   c.holidayChannel ??= null;
   c.ticketCategory ??= null;
   c.lastHoliday ??= null;
+  c.birthdays ??= {};
+  c.birthdayChannel ??= null;
+  c.lastBirthdayCheck ??= null;
   c.autoMuteWarns ??= 3;
+  c.music ??= { volume: 80, stay247: false, voiceChannel: null };
+  c.music.volume ??= 80;
+  c.music.stay247 ??= false;
+  c.music.voiceChannel ??= null;
+  c.xp ??= {}; c.coins ??= {}; c.daily ??= {}; c.welcomeChannel ??= null; c.goodbyeChannel ??= null;
 
   return c;
 }
@@ -156,6 +166,15 @@ const commands = [
     ),
 
   new SlashCommandBuilder().setName("coinflip").setDescription("Підкинути монетку"),
+
+  new SlashCommandBuilder()
+    .setName("rps").setDescription("Камінь, ножиці, папір")
+    .addStringOption(o => o.setName("choice").setDescription("Твій вибір").setRequired(true)
+      .addChoices({name:"Камінь",value:"rock"},{name:"Ножиці",value:"scissors"},{name:"Папір",value:"paper"})),
+
+  new SlashCommandBuilder()
+    .setName("choose").setDescription("Випадково обрати один із варіантів")
+    .addStringOption(o => o.setName("options").setDescription("Варіанти через кому").setRequired(true).setMaxLength(900)),
 
   new SlashCommandBuilder()
     .setName("dice")
@@ -284,6 +303,31 @@ const commands = [
     .addUserOption(userOpt())
     .addRoleOption(o => o.setName("role").setDescription("Роль").setRequired(true)),
 
+  new SlashCommandBuilder().setName("say").setDescription("Надіслати повідомлення від імені бота")
+    .addStringOption(o => o.setName("message").setDescription("Текст повідомлення").setRequired(true).setMaxLength(1900))
+    .addChannelOption(o => o.setName("channel").setDescription("Канал (необов’язково, за замовчуванням поточний)").addChannelTypes(ChannelType.GuildText)),
+  new SlashCommandBuilder().setName("alert").setDescription("Оголошення з тегом усіх учасників")
+    .addStringOption(o => o.setName("message").setDescription("Текст оголошення").setRequired(true).setMaxLength(1800))
+    .addStringOption(o => o.setName("target").setDescription("Кого тегнути").setRequired(true)
+      .addChoices({name:"@everyone — усі",value:"everyone"},{name:"@here — онлайн",value:"here"})),
+  new SlashCommandBuilder().setName("role-create").setDescription("Створити нову роль")
+    .addStringOption(o => o.setName("name").setDescription("Назва ролі").setRequired(true).setMaxLength(100))
+    .addStringOption(o => o.setName("color").setDescription("HEX колір, наприклад #5865F2"))
+    .addBooleanOption(o => o.setName("hoist").setDescription("Показувати окремо у списку учасників"))
+    .addBooleanOption(o => o.setName("mentionable").setDescription("Дозволити згадувати роль")),
+  new SlashCommandBuilder().setName("role-delete").setDescription("Видалити роль")
+    .addRoleOption(o => o.setName("role").setDescription("Роль для видалення").setRequired(true)),
+  new SlashCommandBuilder().setName("daily").setDescription("Отримати щоденний бонус монетами"),
+  new SlashCommandBuilder().setName("balance").setDescription("Переглянути баланс")
+    .addUserOption(userOpt(false)),
+  new SlashCommandBuilder().setName("leaderboard").setDescription("Топ учасників за рівнями та монетами"),
+  new SlashCommandBuilder().setName("rank").setDescription("Переглянути свій рівень")
+    .addUserOption(userOpt(false)),
+  new SlashCommandBuilder().setName("setup-welcome").setDescription("Налаштувати канал привітань новачків")
+    .addChannelOption(o => o.setName("channel").setDescription("Текстовий канал").addChannelTypes(ChannelType.GuildText).setRequired(true)),
+  new SlashCommandBuilder().setName("setup-goodbye").setDescription("Налаштувати канал повідомлень про вихід")
+    .addChannelOption(o => o.setName("channel").setDescription("Текстовий канал").addChannelTypes(ChannelType.GuildText).setRequired(true)),
+
   new SlashCommandBuilder()
     .setName("setup-logs").setDescription("Налаштувати канал логів")
     .addChannelOption(o =>
@@ -319,7 +363,7 @@ const OWNER_COMMANDS = new Set(["admin-add", "admin-remove", "admins"]);
 const ADMIN_COMMANDS = new Set([
   "ban", "unban", "kick", "warn", "warnings", "unwarn", "clear",
   "mute", "unmute", "lock", "unlock", "slowmode",
-  "role-add", "role-remove", "setup-logs", "setup", "setup-tickets", "setup-warns"
+  "role-add", "role-remove", "role-create", "role-delete", "alert", "say", "setup-logs", "setup", "setup-tickets", "setup-warns", "setup-birthdays", "setup-welcome", "setup-goodbye"
 ]);
 
 // =========================
@@ -327,17 +371,19 @@ const ADMIN_COMMANDS = new Set([
 // =========================
 
 const HOLIDAYS = {
-  "01-01": "🎆 З Новим роком!",
-  "01-22": "🇺🇦 З Днем Соборності України!",
-  "02-14": "💘 З Днем святого Валентина!",
-  "03-08": "💐 З Міжнародним жіночим днем!",
+  "01-01": "🎆 З Новим роком! Нехай він принесе мир, радість і багато хороших моментів!",
+  "01-22": "🇺🇦 З Днем Соборності України! Єднаймося та підтримуймо одне одного.",
+  "02-14": "💝 З Днем святого Валентина! Більше тепла, дружби та добрих слів!",
+  "03-08": "🌷 Весняного настрою, поваги та здійснення мрій!",
+  "05-01": "🌿 Гарного травневого дня та натхнення!",
   "05-08": "🕊️ День пам'яті та перемоги над нацизмом у Другій світовій війні.",
   "06-28": "📜 З Днем Конституції України!",
-  "08-24": "💙💛 З Днем Незалежності України!",
-  "10-01": "🛡️ З Днем захисників і захисниць України!",
+  "08-24": "💙💛 З Днем Незалежності України! Слава Україні!",
+  "10-01": "🛡️ З Днем захисників і захисниць України! Дякуємо за захист.",
   "11-21": "🔥 З Днем Гідності та Свободи!",
-  "12-06": "🪖 З Днем Збройних Сил України!",
-  "12-25": "🎄 З Різдвом Христовим!"
+  "12-06": "🪖 З Днем Збройних Сил України! Дякуємо нашим захисникам і захисницям.",
+  "12-25": "🎄 З Різдвом Христовим! Нехай у кожному домі будуть тепло, надія та мир!",
+  "12-31": "✨ Останній день року! Дякуємо за цей рік і готуємося до нового!"
 };
 
 function kyivNow() {
@@ -355,10 +401,22 @@ function kyivNow() {
   };
 }
 
+function orthodoxEaster(year) {
+  const a = year % 4, b = year % 7, c = year % 19;
+  const d = (19 * c + 15) % 30;
+  const e = (2 * a + 4 * b - d + 34) % 7;
+  const month = Math.floor((d + e + 114) / 31);
+  const day = ((d + e + 114) % 31) + 1;
+  const date = new Date(Date.UTC(year, month - 1, day + 13));
+  return `${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+}
+
 async function checkHolidays() {
   const now = kyivNow();
 
-  const text = HOLIDAYS[now.md];
+  const text = now.md === orthodoxEaster(Number(now.key.slice(0, 4)))
+    ? "🐣 Зі святом Великодня! Нехай у домівках панують мир, добро та затишок!"
+    : HOLIDAYS[now.md];
 
   if (!text || now.hour < 9) return;
 
@@ -396,6 +454,20 @@ const handlers = {};
 
 handlers.ubping = i => i.reply(`🏓 Pong! ${client.ws.ping}ms`);
 
+handlers.rps = i => {
+  const names = { rock: "🪨 Камінь", scissors: "✂️ Ножиці", paper: "📄 Папір" };
+  const user = i.options.getString("choice", true);
+  const bot = ["rock", "scissors", "paper"][Math.floor(Math.random() * 3)];
+  const result = user === bot ? "Нічия!" : ((user === "rock" && bot === "scissors") || (user === "scissors" && bot === "paper") || (user === "paper" && bot === "rock")) ? "Ти переміг! 🎉" : "Цього разу переміг бот 🤖";
+  return i.reply(`**Твій вибір:** ${names[user]}\n**Бот:** ${names[bot]}\n\n${result}`);
+};
+
+handlers.choose = i => {
+  const items = i.options.getString("options", true).split(",").map(x => x.trim()).filter(Boolean);
+  if (items.length < 2) return i.reply({ content: "❌ Вкажи щонайменше два варіанти через кому.", flags: EPH });
+  return i.reply(`🎯 Мій вибір: **${items[Math.floor(Math.random() * items.length)]}**`);
+};
+
 handlers.help = i => i.reply({
   embeds: [
     new EmbedBuilder()
@@ -405,7 +477,8 @@ handlers.help = i => i.reply({
         "### 🎮 Для всіх\n" +
         "`/ubping` `/serverinfo` `/botinfo` `/userinfo` `/avatar`\n" +
         "`/ticket` — підтримка\n" +
-        "`/8ball` `/coinflip` `/dice` `/random`\n" +
+        "`/8ball` `/coinflip` `/dice` `/random` `/rps` `/choose`\n" +
+        "`/birthday set|view|list|remove` — дні народження\n" +
         "`/poll` — опитування з реакціями\n\n" +
 
         "### 🛡️ Адміністрація\n" +
@@ -913,11 +986,100 @@ handlers["role-add"] = i => roleAction(i, true);
 handlers["role-remove"] = i => roleAction(i, false);
 
 // =========================
+// MAX 5: ALERT, ROLES, ECONOMY, LEVELS, WELCOME
+// =========================
+handlers.say = async i => {
+  const text = i.options.getString("message", true);
+  const channel = i.options.getChannel("channel") || i.channel;
+  if (!channel || !channel.isTextBased() || !channel.isSendable()) {
+    return i.reply({ content: "❌ Не вдалося надіслати повідомлення в цей канал.", flags: EPH });
+  }
+  const botMember = i.guild.members.me;
+  const perms = channel.permissionsFor(botMember);
+  if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms?.has(PermissionFlagsBits.SendMessages)) {
+    return i.reply({ content: "❌ У бота немає прав переглядати канал або надсилати повідомлення.", flags: EPH });
+  }
+  await channel.send({ content: text, allowedMentions: { parse: [] } });
+  return i.reply({ content: `✅ Повідомлення надіслано від імені бота в ${channel}.`, flags: EPH });
+};
+
+const alertCooldown = new Map();
+handlers.alert = async i => {
+  const last = alertCooldown.get(i.guild.id) || 0;
+  if (Date.now() - last < 5 * 60 * 1000) return i.reply({ content: "⏳ Оголошення можна надсилати раз на 5 хвилин.", flags: EPH });
+  const target = i.options.getString("target", true);
+  const msg = i.options.getString("message", true);
+  const mention = target === "everyone" ? "@everyone" : "@here";
+  await i.reply({ content: `✅ Оголошення надіслано в ${i.channel}.`, flags: EPH });
+  await i.channel.send({ content: `📢 **ОГОЛОШЕННЯ** ${mention}\n\n${msg}`, allowedMentions: { parse: ["everyone"] } });
+  alertCooldown.set(i.guild.id, Date.now());
+  log(i.guild, `📢 Alert (${target}) від ${i.user} у ${i.channel}`);
+};
+
+handlers["role-create"] = async i => {
+  const name = i.options.getString("name", true);
+  const rawColor = i.options.getString("color") || "#5865F2";
+  if (!/^#?[0-9a-fA-F]{6}$/.test(rawColor)) return i.reply({ content: "❌ Колір має бути у форматі #5865F2.", flags: EPH });
+  const role = await i.guild.roles.create({ name, color: rawColor.startsWith("#") ? rawColor : `#${rawColor}`, hoist: i.options.getBoolean("hoist") ?? false, mentionable: i.options.getBoolean("mentionable") ?? false, reason: `Створено ${i.user.tag} через Universal Bot MAX` });
+  return i.reply({ content: `✅ Створено роль ${role}.`, allowedMentions: { parse: [] } });
+};
+handlers["role-delete"] = async i => {
+  const role = i.options.getRole("role", true);
+  if (role.id === i.guild.id || role.managed || role.position >= i.guild.members.me.roles.highest.position) return i.reply({ content: "❌ Цю роль не можна видалити: перевір її тип і позицію відносно ролі бота.", flags: EPH });
+  const name = role.name; await role.delete(`Видалено ${i.user.tag} через Universal Bot MAX`);
+  return i.reply(`🗑️ Роль **${name}** видалено.`);
+};
+handlers["setup-welcome"] = async i => { cfg(i.guild.id).welcomeChannel = i.options.getChannel("channel", true).id; save(); return i.reply(`✅ Канал привітань: ${i.options.getChannel("channel", true)}.`); };
+handlers["setup-goodbye"] = async i => { cfg(i.guild.id).goodbyeChannel = i.options.getChannel("channel", true).id; save(); return i.reply(`✅ Канал прощань: ${i.options.getChannel("channel", true)}.`); };
+handlers.daily = async i => {
+  const x = cfg(i.guild.id), today = kyivNow().key;
+  if (x.daily[i.user.id] === today) return i.reply({ content: "🎁 Ти вже отримав сьогоднішній бонус. Повертайся завтра!", flags: EPH });
+  x.daily[i.user.id] = today; x.coins[i.user.id] = (x.coins[i.user.id] || 0) + 100; save();
+  return i.reply("🎁 Ти отримав **100 монет**! Заходь щодня за новим бонусом.");
+};
+handlers.balance = async i => { const u = i.options.getUser("user") || i.user; return i.reply(`💰 Баланс ${u}: **${cfg(i.guild.id).coins[u.id] || 0}** монет.`); };
+handlers.rank = async i => {
+  const u = i.options.getUser("user") || i.user, x = cfg(i.guild.id), xp = x.xp[u.id] || 0;
+  const level = Math.floor(Math.sqrt(xp / 100)); const next = (level + 1) ** 2 * 100;
+  return i.reply(`🏆 **${u.username}**\nРівень: **${level}**\nДосвід: **${xp}/${next} XP**`);
+};
+handlers.leaderboard = async i => {
+  const x = cfg(i.guild.id);
+  const top = Object.entries(x.xp).sort((a,b)=>b[1]-a[1]).slice(0,10);
+  if (!top.length) return i.reply("Поки що рейтинг порожній. Пиши в чаті, щоб заробляти XP!");
+  return i.reply({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle("🏆 Топ учасників за рівнями").setDescription(top.map(([id,xp,n])=>`**${n+1}.** <@${id}> — рівень ${Math.floor(Math.sqrt(xp/100))} (${xp} XP)`).join("\n"))] });
+};
+
+const xpCooldown = new Map();
+client.on(Events.MessageCreate, message => {
+  if (!message.guild || message.author.bot) return;
+  const cooldownKey = `${message.guild.id}:${message.author.id}`;
+  if (Date.now() - (xpCooldown.get(cooldownKey) || 0) < 60_000) return;
+  xpCooldown.set(cooldownKey, Date.now());
+  const x = cfg(message.guild.id), id = message.author.id;
+  const before = Math.floor(Math.sqrt((x.xp[id] || 0) / 100));
+  x.xp[id] = (x.xp[id] || 0) + 10;
+  const after = Math.floor(Math.sqrt(x.xp[id] / 100));
+  if (after > before) message.channel.send(`🎉 ${message.author}, вітаємо! Ти досяг **${after} рівня**!`).catch(()=>{});
+  save();
+});
+client.on(Events.GuildMemberAdd, member => {
+  const id = cfg(member.guild.id).welcomeChannel; const ch = id && member.guild.channels.cache.get(id);
+  if (ch) ch.send({ embeds: [new EmbedBuilder().setColor(0x2ecc71).setTitle("👋 Ласкаво просимо!").setDescription(`Вітаємо на сервері, ${member}!\nТи наш **${member.guild.memberCount}** учасник.`).setThumbnail(member.user.displayAvatarURL()).setTimestamp()], allowedMentions: { users: [member.id] } }).catch(()=>{});
+});
+client.on(Events.GuildMemberRemove, member => {
+  const id = cfg(member.guild.id).goodbyeChannel; const ch = id && member.guild.channels.cache.get(id);
+  if (ch) ch.send(`👋 **${member.user.tag}** покинув сервер. Будемо раді бачити знову!`).catch(()=>{});
+});
+
+// =========================
 // КНОПКИ ТИКЕТІВ
 // =========================
 
 async function handleButton(i) {
   if (!i.inGuild()) return;
+
+  if (await music.onButton(i)) return;
 
   if (i.customId === "ticket") {
     const old = i.guild.channels.cache.find(
@@ -1004,6 +1166,25 @@ async function handleButton(i) {
 }
 
 // =========================
+// МУЗИЧНИЙ МОДУЛЬ
+// =========================
+
+const birthdays = createBirthdays({ client, cfg, save, isAdmin, EPH });
+commands.push(...birthdays.commands);
+Object.assign(handlers, birthdays.handlers);
+for (const name of birthdays.adminCommands) ADMIN_COMMANDS.add(name);
+
+const music = createMusic({ client, cfg, save, isAdmin, EPH });
+commands.push(...music.commands);
+Object.assign(handlers, music.handlers);
+for (const name of music.adminCommands) ADMIN_COMMANDS.add(name);
+
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  try { music.onVoiceState(oldState, newState); }
+  catch (e) { console.error("❌ Voice state:", e); }
+});
+
+// =========================
 // READY
 // =========================
 
@@ -1031,6 +1212,8 @@ client.once(Events.ClientReady, async () => {
 
   checkHolidays();
   setInterval(checkHolidays, 10 * 60 * 1000);
+  music.onReady();
+  birthdays.onReady();
 });
 
 // =========================
@@ -1082,6 +1265,8 @@ client.on(Events.InteractionCreate, async i => {
 client.on(Events.Error, e => console.error("❌ Client:", e));
 
 process.on("unhandledRejection", e => console.error("❌ Unhandled:", e));
+process.on("SIGINT", () => music.shutdown());
+process.on("SIGTERM", () => music.shutdown());
 process.on("uncaughtException", e => console.error("❌ Uncaught:", e));
 
 // =========================
