@@ -1,33 +1,26 @@
-# Bindarik Bot 6.0
+# Bindarik Bot 10.0 Ultimate
 
-## Запуск
-1. Node.js 20 або новіший.
-2. У папці `bot` виконай `npm install`.
-3. Створи `.env` за прикладом `.env.example` та заповни `TOKEN`, `CLIENT_ID`, `OWNER_ID`. `GUILD_ID` необов'язковий.
-4. Запусти `npm start`.
+Discord.js v14 bot with owner-only web dashboard and Anti-Raid join-burst detection.
 
-## Нове у MAX 5.0
-- `/alert` — оголошення з @everyone або @here. Доступне адміністраторам бота, cooldown 5 хвилин.
-- `/role-create` та `/role-delete` — створення і видалення ролей.
-- `/daily`, `/balance` — щоденні 100 монет і перегляд балансу.
-- `/rank`, `/leaderboard` — рівні та рейтинг XP. За повідомлення нараховується 10 XP.
-- `/setup-welcome` та `/setup-goodbye` — канали входу/виходу учасників.
-- Збереження даних у `config.json`.
+## Included
+- Existing commands/modules from the supplied 10.0 build: moderation, roles, `/alert`, `/say`, giveaways, birthdays/holidays, music, economy, XP, lockdown and owner controls.
+- **Owner-only Dashboard**: choose a server and configure Anti-Raid from a browser.
+- **Anti-Raid**: detects a burst of joins within a configurable window and posts an alert to a selected channel. Optional account-age rule can timeout very new accounts for 10 minutes. This option is OFF by default.
 
-## Музика
-Команди музики залежать від модуля `music.js`. Потрібні права Connect, Speak, View Channel та Send Messages.
+## Setup
+1. Create `.env` from `.env.example`.
+2. Set `TOKEN`, `CLIENT_ID`, `OWNER_ID` and a strong `DASHBOARD_PASSWORD`.
+3. Install dependencies with `npm install`.
+4. Start with `npm start`.
+5. Set your hosting service's public web port to `PORT` (default 3000). Open the host-provided HTTPS URL and sign in with `DASHBOARD_PASSWORD`.
 
-## Важливо для Discord Developer Portal
-Увімкни **Server Members Intent** (для welcome/goodbye) у Privileged Gateway Intents. Боту потрібні права Manage Roles для керування ролями; його найвища роль має бути вище ролей, якими він керує. Для `/alert` потрібне право Mention Everyone. Не давай це право звичайним учасникам.
+## Discord intents and permissions
+Enable **Server Members Intent** for join monitoring. Grant the bot View Channels and Send Messages in the selected alert channel. If enabling account-age timeout, grant Moderate Members. The dashboard uses `OWNER_ID` and the dashboard password; do not share either. Use the hosting provider's HTTPS URL; do not expose the app over plain public HTTP.
 
-Не завантажуй `.env` у публічний репозиторій і не ділися токеном бота.
+## Anti-Raid defaults
+Disabled by default. Suggested starting values: 6 joins in 15 seconds. It alerts only; optional minimum account age is set to 0 (off). It does not mass-ban or delete channels. Review alerts manually and use the existing `/lockdown` only when necessary.
 
-
-## Bindarik Bot 6.0 — нове
-- `/leave-server` та `/leave-all` — вихід із серверів; тільки OWNER_ID.
-- `/lockdown` — тимчасове закриття текстових каналів для @everyone зі збереженням і відновленням попередніх overwrite-прав. Потрібне підтвердження `LOCK` або `RESTORE`.
-- `/giveaway-start` — розіграш із кнопкою участі, автоматичним вибором переможців і збереженням стану після перезапуску.
-
-Для команд потрібні актуальні `CLIENT_ID`, `GUILD_ID`, `OWNER_ID`. Для lockdown надай боту Manage Channels; для створення ролей — Manage Roles. Переконайся, що роль бота розташована вище ролей, якими він керує.
-
-YouTube може блокувати автоматизовані запити. Бот не намагається обходити антибот-захист або використовувати cookies/облікові дані. Для стабільнішого відтворення використовуй відкриті прямі аудіопосилання, радіопотоки та сервіси/джерела, які дозволяють автоматизоване відтворення (наприклад, SoundCloud, якщо конкретний трек доступний).
+## Important
+- Existing music providers remain subject to provider availability and their terms; this project does not bypass YouTube anti-bot restrictions.
+- Keep `.env` private and never upload it to a public repository.
+- This build should be tested on a private Discord test server before enabling moderation actions.

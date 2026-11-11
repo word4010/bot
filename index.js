@@ -20,6 +20,8 @@ const fs = require("fs");
 const path = require("path");
 const createMusic = require("./music");
 const createBirthdays = require("./birthdays");
+const antiRaid = require("./antiraid");
+const startDashboard = require("./dashboard");
 
 const EPH = MessageFlags.Ephemeral;
 
@@ -77,7 +79,7 @@ function cfg(id) {
   c.music.volume ??= 80;
   c.music.stay247 ??= false;
   c.music.voiceChannel ??= null;
-  c.xp ??= {}; c.coins ??= {}; c.daily ??= {}; c.welcomeChannel ??= null; c.goodbyeChannel ??= null;
+  c.xp ??= {}; c.coins ??= {}; c.daily ??= {}; c.work ??= {}; c.automod ??= { enabled: false }; c.welcomeChannel ??= null; c.goodbyeChannel ??= null;
 
   return c;
 }
@@ -229,6 +231,11 @@ const commands = [
 
   new SlashCommandBuilder().setName("admins").setDescription("Список адміністраторів"),
 
+  new SlashCommandBuilder()
+    .setName("commands-control").setDescription("Глобально увімкнути або вимкнути команди (тільки власник бота)")
+    .addStringOption(o => o.setName("action").setDescription("Дія").setRequired(true)
+      .addChoices({ name: "Закрити команди", value: "lock" }, { name: "Відкрити команди", value: "unlock" }, { name: "Перевірити статус", value: "status" })),
+
   // ---- Адміністрація ----
   new SlashCommandBuilder()
     .setName("ban").setDescription("Заблокувати користувача")
@@ -318,6 +325,11 @@ const commands = [
   new SlashCommandBuilder().setName("role-delete").setDescription("Видалити роль")
     .addRoleOption(o => o.setName("role").setDescription("Роль для видалення").setRequired(true)),
   new SlashCommandBuilder().setName("daily").setDescription("Отримати щоденний бонус монетами"),
+  new SlashCommandBuilder().setName("work").setDescription("Виконати роботу й заробити монети"),
+  new SlashCommandBuilder().setName("profile").setDescription("Переглянути ігровий профіль")
+    .addUserOption(userOpt(false)),
+  new SlashCommandBuilder().setName("automod").setDescription("Налаштувати захист від спаму")
+    .addBooleanOption(o => o.setName("enabled").setDescription("Увімкнути або вимкнути антиспам").setRequired(true)),
   new SlashCommandBuilder().setName("balance").setDescription("Переглянути баланс")
     .addUserOption(userOpt(false)),
   new SlashCommandBuilder().setName("leaderboard").setDescription("Топ учасників за рівнями та монетами"),
@@ -369,12 +381,13 @@ const commands = [
 
 ];
 
-const OWNER_COMMANDS = new Set(["admin-add", "admin-remove", "admins", "leave-all", "leave-server"]);
+const OWNER_COMMANDS = new Set(["admin-add", "admin-remove", "admins", "leave-all", "leave-server", "commands-control"]);
+
 
 const ADMIN_COMMANDS = new Set([
   "ban", "unban", "kick", "warn", "warnings", "unwarn", "clear",
   "mute", "unmute", "lock", "unlock", "slowmode",
-  "role-add", "role-remove", "role-create", "role-delete", "alert", "say", "lockdown", "giveaway-start", "setup-logs", "setup", "setup-tickets", "setup-warns", "setup-birthdays", "setup-welcome", "setup-goodbye"
+  "role-add", "role-remove", "role-create", "role-delete", "alert", "say", "lockdown", "giveaway-start", "setup-logs", "setup", "setup-tickets", "setup-warns", "setup-birthdays", "setup-welcome", "setup-goodbye", "automod"
 ]);
 
 // =========================
@@ -460,6 +473,25 @@ async function checkHolidays() {
 // =========================
 
 const handlers = {};
+handlers["commands-control"] = async i => {
+  const action = i.options.getString("action", true);
+  if (action === "lock") {
+    commandsLocked = true;
+    writeJson(COMMANDS_STATE_PATH, { locked: true, updatedAt: new Date().toISOString(), updatedBy: i.user.id });
+    return i.reply({ content: "🔒 Усі slash-команди заблоковано для інших користувачів. Власник бота може керувати блокуванням.", flags: EPH });
+  }
+  if (action === "unlock") {
+    commandsLocked = false;
+    writeJson(COMMANDS_STATE_PATH, { locked: false, updatedAt: new Date().toISOString(), updatedBy: i.user.id });
+    return i.reply({ content: "🔓 Slash-команди знову доступні.", flags: EPH });
+  }
+  return i.reply({ content: commandsLocked ? "🔒 Команди зараз заблоковані." : "🟢 Команди зараз доступні.", flags: EPH });
+};
+
+
+// Глобальне блокування slash-команд, стан зберігається після перезапуску
+const COMMANDS_STATE_PATH = path.join(__dirname, "commands-state.json");
+let commandsLocked = Boolean(readJson(COMMANDS_STATE_PATH, { locked: false }).locked);
 
 // Дані розіграшів та збережені права каналів для безпечного відновлення
 const GIVEAWAYS_PATH = path.join(__dirname, "giveaways.json");
@@ -1143,6 +1175,28 @@ handlers.daily = async i => {
   return i.reply("🎁 Ти отримав **100 монет**! Заходь щодня за новим бонусом.");
 };
 handlers.balance = async i => { const u = i.options.getUser("user") || i.user; return i.reply(`💰 Баланс ${u}: **${cfg(i.guild.id).coins[u.id] || 0}** монет.`); };
+handlers.work = async i => {
+  const x = cfg(i.guild.id), now = Date.now(), last = x.work[i.user.id] || 0;
+  const wait = 30 * 60 * 1000 - (now - last);
+  if (wait > 0) return i.reply({ content: `⏳ Наступна робота буде доступна через **${Math.ceil(wait / 60000)} хв.**`, flags: EPH });
+  const jobs = ["допоміг у кав’ярні", "доставив замовлення", "налаштував комп’ютер", "допоміг організувати подію", "попрацював дизайнером"];
+  const earned = 40 + Math.floor(Math.random() * 81);
+  x.work[i.user.id] = now; x.coins[i.user.id] = (x.coins[i.user.id] || 0) + earned; save();
+  return i.reply(`💼 Ти ${jobs[Math.floor(Math.random() * jobs.length)]} і заробив **${earned} монет**!`);
+};
+handlers.profile = async i => {
+  const u = i.options.getUser("user") || i.user, x = cfg(i.guild.id);
+  const xp = x.xp[u.id] || 0, level = Math.floor(Math.sqrt(xp / 100));
+  return i.reply({ embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`👤 Профіль ${u.username}`).setThumbnail(u.displayAvatarURL()).addFields(
+    { name: "🏆 Рівень", value: String(level), inline: true },
+    { name: "✨ XP", value: String(xp), inline: true },
+    { name: "💰 Монети", value: String(x.coins[u.id] || 0), inline: true }
+  )] });
+};
+handlers.automod = async i => {
+  const enabled = i.options.getBoolean("enabled", true); cfg(i.guild.id).automod.enabled = enabled; save();
+  return i.reply({ content: enabled ? "🛡️ Антиспам увімкнено: 5 повідомлень за 6 секунд." : "Антиспам вимкнено.", flags: EPH });
+};
 handlers.rank = async i => {
   const u = i.options.getUser("user") || i.user, x = cfg(i.guild.id), xp = x.xp[u.id] || 0;
   const level = Math.floor(Math.sqrt(xp / 100)); const next = (level + 1) ** 2 * 100;
@@ -1168,6 +1222,24 @@ client.on(Events.MessageCreate, message => {
   if (after > before) message.channel.send(`🎉 ${message.author}, вітаємо! Ти досяг **${after} рівня**!`).catch(()=>{});
   save();
 });
+const spamTracker = new Map();
+client.on(Events.MessageCreate, async message => {
+  if (!message.guild || message.author.bot) return;
+  if (!cfg(message.guild.id).automod.enabled) return;
+  const key = `${message.guild.id}:${message.author.id}`, now = Date.now();
+  const recent = (spamTracker.get(key) || []).filter(t => now - t < 6000);
+  recent.push(now); spamTracker.set(key, recent);
+  if (recent.length >= 5) {
+    const member = message.member;
+    if (member && !member.permissions.has(PermissionFlagsBits.ManageMessages)) {
+      await message.delete().catch(() => {});
+      const notice = await message.channel.send({ content: `🛡️ ${message.author}, повільніше — спрацював антиспам.`, allowedMentions: { users: [message.author.id] } }).catch(() => null);
+      if (notice) setTimeout(() => notice.delete().catch(() => {}), 5000);
+      spamTracker.set(key, []);
+    }
+  }
+});
+
 client.on(Events.GuildMemberAdd, member => {
   const id = cfg(member.guild.id).welcomeChannel; const ch = id && member.guild.channels.cache.get(id);
   if (ch) ch.send({ embeds: [new EmbedBuilder().setColor(0x2ecc71).setTitle("👋 Ласкаво просимо!").setDescription(`Вітаємо на сервері, ${member}!\nТи наш **${member.guild.memberCount}** учасник.`).setThumbnail(member.user.displayAvatarURL()).setTimestamp()], allowedMentions: { users: [member.id] } }).catch(()=>{});
@@ -1305,6 +1377,8 @@ const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
 
 client.once(Events.ClientReady, async () => {
   console.log(`🤖 ${client.user.tag}`);
+  antiRaid.attach(client);
+  startDashboard(client);
   console.log(`🟢 Серверів: ${client.guilds.cache.size}`);
 
   try {
@@ -1345,6 +1419,10 @@ client.on(Events.InteractionCreate, async i => {
     }
 
     const n = i.commandName;
+
+    if (commandsLocked && !isOwner(i.user.id)) {
+      return i.reply({ content: "🔒 Команди тимчасово вимкнені власником бота.", flags: EPH });
+    }
 
     if (OWNER_COMMANDS.has(n) && !isOwner(i.user.id)) {
       return i.reply({ content: "👑 Ця команда доступна тільки власнику бота.", flags: EPH });
