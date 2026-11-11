@@ -328,6 +328,17 @@ const commands = [
   new SlashCommandBuilder().setName("setup-goodbye").setDescription("Налаштувати канал повідомлень про вихід")
     .addChannelOption(o => o.setName("channel").setDescription("Текстовий канал").addChannelTypes(ChannelType.GuildText).setRequired(true)),
 
+  new SlashCommandBuilder().setName("leave-server").setDescription("Вивести Bindarik Bot із цього сервера"),
+  new SlashCommandBuilder().setName("leave-all").setDescription("Вивести Bindarik Bot з усіх серверів (власник)"),
+  new SlashCommandBuilder().setName("lockdown").setDescription("Тимчасово закрити або відновити текстові канали")
+    .addStringOption(o => o.setName("action").setDescription("Дія").setRequired(true)
+      .addChoices({name:"Закрити текстові канали",value:"lock"},{name:"Відновити попередні права",value:"unlock"}))
+    .addStringOption(o => o.setName("confirm").setDescription("Введи LOCK для закриття або RESTORE для відновлення").setRequired(true)),
+  new SlashCommandBuilder().setName("giveaway-start").setDescription("Запустити розіграш із кнопкою участі")
+    .addStringOption(o => o.setName("prize").setDescription("Що розігруємо?").setRequired(true).setMaxLength(150))
+    .addIntegerOption(o => o.setName("minutes").setDescription("Тривалість у хвилинах").setRequired(true).setMinValue(1).setMaxValue(10080))
+    .addIntegerOption(o => o.setName("winners").setDescription("Кількість переможців").setMinValue(1).setMaxValue(20)),
+
   new SlashCommandBuilder()
     .setName("setup-logs").setDescription("Налаштувати канал логів")
     .addChannelOption(o =>
@@ -358,12 +369,12 @@ const commands = [
 
 ];
 
-const OWNER_COMMANDS = new Set(["admin-add", "admin-remove", "admins"]);
+const OWNER_COMMANDS = new Set(["admin-add", "admin-remove", "admins", "leave-all", "leave-server"]);
 
 const ADMIN_COMMANDS = new Set([
   "ban", "unban", "kick", "warn", "warnings", "unwarn", "clear",
   "mute", "unmute", "lock", "unlock", "slowmode",
-  "role-add", "role-remove", "role-create", "role-delete", "alert", "say", "setup-logs", "setup", "setup-tickets", "setup-warns", "setup-birthdays", "setup-welcome", "setup-goodbye"
+  "role-add", "role-remove", "role-create", "role-delete", "alert", "say", "lockdown", "giveaway-start", "setup-logs", "setup", "setup-tickets", "setup-warns", "setup-birthdays", "setup-welcome", "setup-goodbye"
 ]);
 
 // =========================
@@ -450,6 +461,35 @@ async function checkHolidays() {
 
 const handlers = {};
 
+// Дані розіграшів та збережені права каналів для безпечного відновлення
+const GIVEAWAYS_PATH = path.join(__dirname, "giveaways.json");
+const LOCKDOWNS_PATH = path.join(__dirname, "lockdowns.json");
+function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return fallback; } }
+function writeJson(file, data) { const tmp = file + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(data, null, 2)); fs.renameSync(tmp, file); }
+let giveaways = readJson(GIVEAWAYS_PATH, {});
+let lockdowns = readJson(LOCKDOWNS_PATH, {});
+const giveawayTimers = new Map();
+function finishGiveaway(id) {
+  const g = giveaways[id];
+  if (!g || g.ended) return;
+  g.ended = true; writeJson(GIVEAWAYS_PATH, giveaways);
+  const guild = client.guilds.cache.get(g.guildId);
+  const channel = guild?.channels.cache.get(g.channelId);
+  if (!channel) return;
+  const pool = [...new Set(g.entries || [])];
+  const winners = [];
+  while (pool.length && winners.length < g.winnerCount) winners.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  const result = winners.length ? winners.map(x => `<@${x}>`).join(", ") : "Переможців немає — ніхто не взяв участь.";
+  channel.send({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle("🎉 Розіграш завершено!").setDescription(`**Приз:** ${g.prize}
+**Переможець(ці):** ${result}`)] }).catch(()=>{});
+}
+function scheduleGiveaway(g) {
+  if (!g || g.ended) return;
+  const delay = Math.max(0, g.endsAt - Date.now());
+  if (giveawayTimers.has(g.id)) clearTimeout(giveawayTimers.get(g.id));
+  giveawayTimers.set(g.id, setTimeout(() => finishGiveaway(g.id), Math.min(delay, 2147483647)));
+}
+
 // ---- Для всіх ----
 
 handlers.ubping = i => i.reply(`🏓 Pong! ${client.ws.ping}ms`);
@@ -472,7 +512,7 @@ handlers.help = i => i.reply({
   embeds: [
     new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle("🤖 Universal Bot MAX")
+      .setTitle("🤖 Bindarik Bot")
       .setDescription(
         "### 🎮 Для всіх\n" +
         "`/ubping` `/serverinfo` `/botinfo` `/userinfo` `/avatar`\n" +
@@ -525,7 +565,7 @@ handlers.botinfo = i => {
     embeds: [
       new EmbedBuilder()
         .setColor(0x5865f2)
-        .setTitle("🤖 Universal Bot MAX")
+        .setTitle("🤖 Bindarik Bot")
         .addFields(
           { name: "🏓 Ping", value: `${client.ws.ping}ms`, inline: true },
           { name: "🖥️ Серверів", value: `${client.guilds.cache.size}`, inline: true },
@@ -1020,17 +1060,82 @@ handlers["role-create"] = async i => {
   const name = i.options.getString("name", true);
   const rawColor = i.options.getString("color") || "#5865F2";
   if (!/^#?[0-9a-fA-F]{6}$/.test(rawColor)) return i.reply({ content: "❌ Колір має бути у форматі #5865F2.", flags: EPH });
-  const role = await i.guild.roles.create({ name, color: rawColor.startsWith("#") ? rawColor : `#${rawColor}`, hoist: i.options.getBoolean("hoist") ?? false, mentionable: i.options.getBoolean("mentionable") ?? false, reason: `Створено ${i.user.tag} через Universal Bot MAX` });
+  const role = await i.guild.roles.create({ name, color: rawColor.startsWith("#") ? rawColor : `#${rawColor}`, hoist: i.options.getBoolean("hoist") ?? false, mentionable: i.options.getBoolean("mentionable") ?? false, reason: `Створено ${i.user.tag} через Bindarik Bot` });
   return i.reply({ content: `✅ Створено роль ${role}.`, allowedMentions: { parse: [] } });
 };
 handlers["role-delete"] = async i => {
   const role = i.options.getRole("role", true);
   if (role.id === i.guild.id || role.managed || role.position >= i.guild.members.me.roles.highest.position) return i.reply({ content: "❌ Цю роль не можна видалити: перевір її тип і позицію відносно ролі бота.", flags: EPH });
-  const name = role.name; await role.delete(`Видалено ${i.user.tag} через Universal Bot MAX`);
+  const name = role.name; await role.delete(`Видалено ${i.user.tag} через Bindarik Bot`);
   return i.reply(`🗑️ Роль **${name}** видалено.`);
 };
 handlers["setup-welcome"] = async i => { cfg(i.guild.id).welcomeChannel = i.options.getChannel("channel", true).id; save(); return i.reply(`✅ Канал привітань: ${i.options.getChannel("channel", true)}.`); };
 handlers["setup-goodbye"] = async i => { cfg(i.guild.id).goodbyeChannel = i.options.getChannel("channel", true).id; save(); return i.reply(`✅ Канал прощань: ${i.options.getChannel("channel", true)}.`); };
+handlers["leave-server"] = async i => {
+  if (!isOwner(i.user.id)) return i.reply({ content: "👑 Лише власник бота може це зробити.", flags: EPH });
+  await i.reply({ content: `⚠️ Bindarik Bot вийде із сервера **${i.guild.name}**.`, flags: EPH });
+  setTimeout(() => i.guild.leave().catch(console.error), 1500);
+};
+handlers["leave-all"] = async i => {
+  if (!isOwner(i.user.id)) return i.reply({ content: "👑 Лише власник бота може це зробити.", flags: EPH });
+  const count = client.guilds.cache.size;
+  await i.reply({ content: `⚠️ Починаю вихід із ${count} серверів. Цю дію не можна скасувати.`, flags: EPH });
+  for (const guild of [...client.guilds.cache.values()]) {
+    try { await guild.leave(); } catch (e) { console.error(`Не вдалося вийти з ${guild.id}:`, e.message); }
+  }
+};
+handlers.lockdown = async i => {
+  const action = i.options.getString("action", true);
+  const confirm = i.options.getString("confirm", true).trim().toUpperCase();
+  const key = i.guild.id;
+  if (action === "lock") {
+    if (confirm !== "LOCK") return i.reply({ content: "❌ Для підтвердження введи точно LOCK.", flags: EPH });
+    if (lockdowns[key]) return i.reply({ content: "ℹ️ Є активне блокування. Спочатку виконай unlock.", flags: EPH });
+    await i.deferReply({ flags: EPH });
+    const snapshot = {};
+    const channels = i.guild.channels.cache.filter(c => [ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(c.type));
+    for (const ch of channels.values()) {
+      const ow = ch.permissionOverwrites.cache.get(i.guild.roles.everyone.id);
+      snapshot[ch.id] = ow ? { existed: true, allow: ow.allow.bitfield.toString(), deny: ow.deny.bitfield.toString() } : { existed: false };
+      await ch.permissionOverwrites.edit(i.guild.roles.everyone, { SendMessages: false }, { reason: `Bindarik Bot lockdown by ${i.user.tag}` }).catch(e => console.error(`Lockdown ${ch.id}:`, e.message));
+    }
+    lockdowns[key] = { createdAt: Date.now(), channels: snapshot };
+    writeJson(LOCKDOWNS_PATH, lockdowns);
+    return i.editReply(`🔒 Закрито ${channels.size} текстових каналів для @everyone. Попередні права збережено; для відновлення виконай /lockdown action:unlock confirm:RESTORE.`);
+  }
+  if (confirm !== "RESTORE") return i.reply({ content: "❌ Для підтвердження введи точно RESTORE.", flags: EPH });
+  const saved = lockdowns[key];
+  if (!saved) return i.reply({ content: "ℹ️ Для цього сервера немає збереженого блокування.", flags: EPH });
+  await i.deferReply({ flags: EPH });
+  let restored = 0;
+  for (const [channelId, state] of Object.entries(saved.channels)) {
+    const ch = i.guild.channels.cache.get(channelId);
+    if (!ch) continue;
+    try {
+      if (state.existed) await ch.permissionOverwrites.edit(i.guild.roles.everyone, { allow: BigInt(state.allow), deny: BigInt(state.deny) }, { reason: `Bindarik Bot restore lockdown by ${i.user.tag}` });
+      else await ch.permissionOverwrites.delete(i.guild.roles.everyone, `Bindarik Bot restore lockdown by ${i.user.tag}`);
+      restored++;
+    } catch (e) { console.error(`Restore ${channelId}:`, e.message); }
+  }
+  delete lockdowns[key]; writeJson(LOCKDOWNS_PATH, lockdowns);
+  return i.editReply(`🔓 Відновлено попередні права у ${restored} каналах.`);
+};
+handlers["giveaway-start"] = async i => {
+  const prize = i.options.getString("prize", true);
+  const minutes = i.options.getInteger("minutes", true);
+  const winnerCount = i.options.getInteger("winners") || 1;
+  const id = `${i.guild.id}-${Date.now()}`;
+  const g = { id, guildId: i.guild.id, channelId: i.channel.id, prize, winnerCount, endsAt: Date.now() + minutes * 60000, entries: [], ended: false };
+  const row = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`giveaway_join:${id}`).setLabel("Взяти участь").setEmoji("🎉").setStyle(ButtonStyle.Success));
+  const msg = await i.channel.send({ embeds: [new EmbedBuilder().setColor(0xf1c40f).setTitle("🎁 РОЗІГРАШ!").setDescription(`**Приз:** ${prize}
+**Переможців:** ${winnerCount}
+**Завершення:** <t:${Math.floor(g.endsAt / 1000)}:R>
+
+Натисни кнопку нижче, щоб взяти участь!`).setFooter({ text: "Bindarik Bot • Giveaway" })], components: [row] });
+  g.messageId = msg.id; giveaways[id] = g; writeJson(GIVEAWAYS_PATH, giveaways); scheduleGiveaway(g);
+  return i.reply({ content: `✅ Розіграш створено: ${msg.url}`, flags: EPH });
+};
+
 handlers.daily = async i => {
   const x = cfg(i.guild.id), today = kyivNow().key;
   if (x.daily[i.user.id] === today) return i.reply({ content: "🎁 Ти вже отримав сьогоднішній бонус. Повертайся завтра!", flags: EPH });
@@ -1080,6 +1185,14 @@ async function handleButton(i) {
   if (!i.inGuild()) return;
 
   if (await music.onButton(i)) return;
+  if (i.customId.startsWith("giveaway_join:")) {
+    const id = i.customId.slice("giveaway_join:".length), g = giveaways[id];
+    if (!g || g.ended || Date.now() >= g.endsAt) return i.reply({ content: "⏰ Цей розіграш уже завершився.", flags: EPH });
+    g.entries ||= [];
+    if (g.entries.includes(i.user.id)) return i.reply({ content: "Ти вже береш участь! 🍀", flags: EPH });
+    g.entries.push(i.user.id); writeJson(GIVEAWAYS_PATH, giveaways);
+    return i.reply({ content: "✅ Ти успішно долучився до розіграшу! Удачі 🍀", flags: EPH });
+  }
 
   if (i.customId === "ticket") {
     const old = i.guild.channels.cache.find(
@@ -1214,6 +1327,7 @@ client.once(Events.ClientReady, async () => {
   setInterval(checkHolidays, 10 * 60 * 1000);
   music.onReady();
   birthdays.onReady();
+  for (const giveaway of Object.values(giveaways)) scheduleGiveaway(giveaway);
 });
 
 // =========================

@@ -149,7 +149,7 @@ function toTrack(e, requestedBy) {
   };
 }
 
-async function resolveQuery(query, requestedBy) {
+async function resolveQuery(query, requestedBy, searchSource = "youtube") {
   try {
     await ensureYtDlp();
   } catch (e) {
@@ -160,7 +160,7 @@ async function resolveQuery(query, requestedBy) {
   const isUrl = /^https?:\/\//i.test(query);
 
   if (/open\.spotify\.com|^spotify:/i.test(query)) {
-    throw new UserError("❌ Spotify-посилання не підтримуються. Встав назву пісні або посилання YouTube / SoundCloud.");
+    throw new UserError("❌ Spotify-посилання не підтримуються. Встав назву пісні або посилання YouTube / SoundCloud. Для Spotify-посилань встав назву треку та обери SoundCloud або YouTube.");
   }
 
   const wantsPlaylist = isUrl && (
@@ -179,7 +179,7 @@ async function resolveQuery(query, requestedBy) {
 
   if (!wantsPlaylist) args.push("--no-playlist");
 
-  args.push(isUrl ? query : `ytsearch1:${query}`);
+  args.push(isUrl ? query : `${searchSource === "soundcloud" ? "scsearch1" : "ytsearch1"}:${query}`);
 
   let out;
 
@@ -726,7 +726,10 @@ module.exports = function createMusic(ctx) {
       .addStringOption(o =>
         o.setName("query").setDescription("Назва, посилання YouTube/SoundCloud або плейлист")
           .setRequired(true).setMaxLength(300)
-      ),
+      )
+      .addStringOption(o => o.setName("source").setDescription("Де шукати назву пісні").addChoices(
+        { name: "YouTube", value: "youtube" }, { name: "SoundCloud", value: "soundcloud" }
+      )),
     new SlashCommandBuilder().setName("skip").setDescription("Пропустити поточний трек"),
     new SlashCommandBuilder().setName("stop").setDescription("Зупинити музику та очистити чергу"),
     new SlashCommandBuilder().setName("pause").setDescription("Поставити на паузу"),
@@ -771,7 +774,7 @@ module.exports = function createMusic(ctx) {
     await i.deferReply();
 
     try {
-      const result = await resolveQuery(i.options.getString("query", true).trim(), i.user.id);
+      const result = await resolveQuery(i.options.getString("query", true).trim(), i.user.id, i.options.getString("source") || "youtube");
 
       moveIfIdle(i, vc);
 
